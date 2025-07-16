@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -11,13 +12,24 @@ app.use(cors());
 app.use(bodyParser.json());
 
 app.post('/api/payment', (req, res) => {
+  const { cardNumber, expMonth, expYear, cvv, amount, isProduction } = req.body;
   console.log("Received request:", req.body);
 
-  const { cardNumber, expMonth, expYear, cvv, amount } = req.body;
-
   const merchantAuthentication = new APIContracts.MerchantAuthenticationType();
-  merchantAuthentication.setName(process.env.API_LOGIN_ID);
-  merchantAuthentication.setTransactionKey(process.env.TRANSACTION_KEY);
+
+  if (isProduction) {
+    if (!process.env.PROD_API_LOGIN_ID || !process.env.PROD_TRANSACTION_KEY) {
+      return res.status(400).json({
+        success: false,
+        message: "Production keys not found. Cannot process live transaction."
+      });
+    }
+    merchantAuthentication.setName(process.env.PROD_API_LOGIN_ID);
+    merchantAuthentication.setTransactionKey(process.env.PROD_TRANSACTION_KEY);
+  } else {
+    merchantAuthentication.setName(process.env.API_LOGIN_ID);
+    merchantAuthentication.setTransactionKey(process.env.TRANSACTION_KEY);
+  }
 
   const creditCard = new APIContracts.CreditCardType();
   creditCard.setCardNumber(cardNumber);
@@ -37,12 +49,15 @@ app.post('/api/payment', (req, res) => {
   createRequest.setTransactionRequest(transactionRequest);
 
   const ctrl = new APIControllers.CreateTransactionController(createRequest.getJSON());
-  ctrl.setEnvironment('https://apitest.authorize.net/xml/v1/request.api'); // ✅ Sandbox environment
+  const apiUrl = isProduction
+    ? 'https://api2.authorize.net/xml/v1/request.api'
+    : 'https://apitest.authorize.net/xml/v1/request.api';
+
+  ctrl.setEnvironment(apiUrl);
 
   ctrl.execute(() => {
     const apiResponse = ctrl.getResponse();
     const response = new APIContracts.CreateTransactionResponse(apiResponse);
-
     console.log("Raw API response:", JSON.stringify(apiResponse, null, 2));
 
     if (response.getMessages().getResultCode() === APIContracts.MessageTypeEnum.OK) {
@@ -51,7 +66,8 @@ app.post('/api/payment', (req, res) => {
         return res.json({
           success: true,
           message: transactionResponse.getMessages().getMessage()[0].getDescription(),
-          transactionId: transactionResponse.getTransId()
+          transactionId: transactionResponse.getTransId(),
+          mode: isProduction ? 'Production' : 'Sandbox'
         });
       } else {
         return res.status(400).json({
